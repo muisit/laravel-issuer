@@ -1,0 +1,130 @@
+#!/bin/bash
+
+SCRIPT_HOME="$( cd "$( dirname "$0" )" && pwd )"
+
+# =================================================================================================================
+# Usage:
+# -----------------------------------------------------------------------------------------------------------------
+usage() {
+  cat <<-EOF
+
+  Usage: $0 [command] [options]
+
+  build - rebuild the docker containers. Do this after config changes
+
+  up -  Creates the application container from the built images
+        and starts the services based on the docker-compose.yml file.
+
+        You can pass in a list of containers to start.
+        By default all containers will be started.
+
+  stop - Stops the services.  This is a non-destructive process.  The volumes and containers
+         are not deleted so they will be reused the next time you run start.
+
+  down - Brings down the services and removes the volumes (storage) and containers.
+
+EOF
+exit 1
+}
+
+configureEnvironment () {
+  if [ -f .env ]; then
+    while read line; do
+      if [[ ! "$line" =~ ^\# ]] && [[ "$line" =~ .*= ]]; then
+        export ${line//[$'\r\n']}
+      fi
+    done < .env
+  fi
+
+  for arg in $@; do
+    case "$arg" in
+      *=*)
+        export ${arg}
+        ;;
+    esac
+  done
+ 
+  export APP_PORT=${APP_PORT:-"8080"}
+}
+
+
+getStartupParams() {
+  CONTAINERS=""
+  ARGS=""
+  if [ "$COMMAND" == "start" ]; then
+    ARGS+="--force-recreate"
+  fi
+
+  for arg in $@; do
+    case "$arg" in
+      *=*)
+        # Skip it
+        ;;
+     -*)
+        ARGS+=" $arg";;
+      *)
+        CONTAINERS+=" $arg";;
+    esac
+  done
+
+  if [ -z "$CONTAINERS" ]; then
+    CONTAINERS="$DEFAULT_CONTAINERS"
+  fi
+
+  echo ${ARGS} ${CONTAINERS}
+}
+
+build() {
+  # Build all containers in the docker-compose file
+  echo -e "\nBuilding containers ..."
+  echo docker-compose build $@
+  docker-compose build $@
+}
+
+deleteVolumes() {
+  echo "Stopping and removing any running containers ..."
+  docker-compose down -v
+
+  # remove runtime information
+  sudo rm -rf app/database
+}
+
+init() {
+    # initialize the runtime directories for the various services
+    mkdir -p app/database
+    chmod -R 0777 app/database
+}
+
+# =================================================================================================================
+
+pushd ${SCRIPT_HOME} >/dev/null
+COMMAND=$1
+shift || true
+
+case "$COMMAND" in
+  up)
+    init
+    _startupParams=$(getStartupParams $@)
+    configureEnvironment $@
+    docker-compose up -d ${_startupParams}
+    docker-compose logs -f
+    ;;
+  stop)
+    configureEnvironment $@
+    docker-compose stop
+    ;;
+  down)
+    configureEnvironment $@
+    deleteVolumes
+    ;;
+  build)
+    _startupParams=$(getStartupParams $@)
+    configureEnvironment $@
+    build ${_startupParams}
+    ;;
+  *)
+    usage
+    ;;
+esac
+
+popd >/dev/null
